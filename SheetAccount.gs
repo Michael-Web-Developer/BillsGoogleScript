@@ -33,7 +33,7 @@ class SheetAccount {
    * @param {Format1CData} format1CData
    * @return {void}
    */
-  insertOrUpdate(format1CData){
+  insertOrUpdate1CBills(format1CData){
     let accounts = this.getAccountsOnSheet()
     let dates = this.getDates()
 
@@ -62,16 +62,88 @@ class SheetAccount {
       }
     })
 
+    let row
+    let column
+
     if(!indexDate){
       this.sheet.getRange(dates.length + 1, 1).setValue(currentDate)
-      this.sheet.getRange(this.sheet.getLastRow(), indexAccount+1, 1, 2).setValues([[startAmount, endAmount]])
+      row = this.sheet.getLastRow()
+      column = indexAccount+1
+      this.sheet.getRange(row, column, 1, 2).setValues([[startAmount, endAmount]])
+      this.checkValuesOfAccounts(format1CData, row, column)
     } else {
-      this.sheet.getRange(+indexDate + 1, indexAccount+1, 1, 2).setValues([[startAmount, endAmount]])
+      row = +indexDate + 1
+      column = indexAccount+1
+      this.sheet.getRange(row, column, 1, 2).setValues([[startAmount, endAmount]])
+      this.checkValuesOfAccounts(format1CData, row, column)
     }
 
     return
   }
 
+  /**
+   * Добавление или создание информацию о счете
+   * @param {FormatPaymentSystem[]} formatPaymentSystems
+   * @return {void}
+   */
+  insertOrUpdatePaymentSystemsData(formatPaymentSystems){
+    let accounts = this.getAccountsOnSheet()
+    let dates = this.getDates()
+
+    for(let dataPaymentSystem of formatPaymentSystems){
+      let currentAccount = dataPaymentSystem["счет"];
+      let currentDate = dataPaymentSystem["дата"]
+      currentDate = Utilities.formatDate(currentDate, "GMT+3", "dd.MM.yyyy")
+
+      let indexAccount = accounts.indexOf(currentAccount)
+
+      if(indexAccount === -1) {
+        Browser.msgBox("Ошибка!", 'На листе "счета" нет счета: ' + currentAccount, Browser.Buttons.OK);
+        continue;
+      }
+
+      let indexDate;
+
+      dates.forEach((value,index) => {
+        if(value instanceof Date){
+          let dateStringRow = Utilities.formatDate(value, "GMT+3", "dd.MM.yyyy")
+          if(dateStringRow === currentDate) indexDate = index
+        } else if(value === currentDate){
+          indexDate = index
+        }
+      })
+
+      let row
+      let column
+
+      if(!indexDate){
+        this.sheet.getRange(dates.length + 1, 1).setValue(currentDate)
+        row = this.sheet.getLastRow()
+        column = indexAccount+1
+        let prevData = this.getPrevAmount(row, column)
+        let endAmount = prevData.endAmount + dataPaymentSystem["сальдо"] * -1
+        this.sheet.getRange(row, column, 1, 2).setValues([[prevData.endAmount, endAmount]])
+      } else {
+        row = +indexDate + 1
+        column = indexAccount+1
+        let prevData = this.getPrevAmount(row, column)
+        let endAmount = prevData.endAmount + dataPaymentSystem["сальдо"] * -1
+        this.sheet.getRange(row, column, 1, 2).setValues([[prevData.endAmount, endAmount]])
+      }
+    }
+    return
+  }
+
+  getPrevAmount(row,column){
+    let prevData = this.sheet.getRange(row-1, column, 1, 2).getValues()
+    let outputObject = {
+      startAmount:null,
+      endAmount:null
+    }
+    outputObject.startAmount = prevData[0][0]
+    outputObject.endAmount = prevData[0][1]
+    return outputObject
+  }
   /**
    * Создание нового счета
    * @param {string} account
@@ -85,92 +157,35 @@ class SheetAccount {
       .merge()
       .setBorder(false, false, true, true, false, false)
   }
-}
 
-// Возвращает остаток на начало дня, путём вычитания суммы выписок за этот день из остатка на данный момент
-function getLastValue(payments, account){
-  let today = new Date();                          
-  let lastValue = 0;
-  
-  let strToday = Utilities.formatDate(today, "GMT+3", "yyyy-MM-dd") + "T00:00:00";
-  
-  for (let i = payments.length-1; i >= 0; i--){
-    if (payments[i].executed == strToday){
-      if (payments[i].bankAccountNumber == account) {
-        if (payments[i].category == "Debet")  lastValue += payments[i].amount;
-        if (payments[i].category == "Credit")  lastValue -= payments[i].amount;
+  /**
+   * Проверка предыдущих начальных остатков счета
+   * @param {Format1CData} data Данные с текущими значении об остатках
+   * @param {number} row Строка текущих данных
+   * @param {number} column Колонка с текущим счетом (начальный остаток)
+   * @return {void}
+   */
+  checkValuesOfAccounts(data, row, column){
+    let currentDate = Utilities.formatDate(data["датаначала"], "GMT+3", "yyyy-MM-dd");
+    let prevDay = new Date(currentDate)
+    prevDay.setDate(prevDay.getDate() - 1)
+    prevDay = Utilities.formatDate(prevDay, "GMT+3", "dd.MM.yyyy");
+
+    if (this.sheet.getRange(row-1, 1).getValue() == prevDay){
+      const lastValue = this.sheet.getRange(row-1, column+1).getValue();
+      const value = data["начальныйостаток"];
+      if (lastValue != value && lastValue !== ""){
+        this.sheet.getRange(row-1, column+1)
+          .setNote("Не совпадает со следующим днём")
+          .setBackgroundRGB(255, 0, 0)
+
+        this.sheet.getRange(row, column)
+          .setNote("Не совпадает с прошлым днём")
+          .setValue("")
+          .setBackgroundRGB(255, 0, 0)
+
+        Browser.msgBox("Ошибка!", 'На листе "счета" не совпадают данные. Cчет: ' + this.sheet.getRange(1, column).getValue(), Browser.Buttons.OK);
       }
-    }
-    else break;
-  }
-  return lastValue;
-};
-
-// Обновляет значения счета на листе "счета"
-function updateAccount(sheetAccounts, payments, amount, row, column){
-  sheetAccounts.getRange(row, column+1).setValue(Number(amount));
-  const lastValue = getLastValue(payments, sheetAccounts.getRange(1, column).getValue());
-  sheetAccounts.getRange(row, column).setValue(Number(amount) - Number(lastValue));
-  sheetAccounts.getRange(row-1, column+1).setNote("");
-  sheetAccounts.getRange(row-1, column+1).setBackgroundRGB(255, 255, 255);
-  sheetAccounts.getRange(row, column).setNote("");
-  sheetAccounts.getRange(row, column).setBackgroundRGB(255, 255, 255);
-}
-
-// Возвращает строку с нужной датой
-function getRowAccounts(sheetAccounts){
-  const today = Utilities.formatDate(new Date(), "GMT+3", "dd.MM.yyyy");
-  
-  if (sheetAccounts.getRange(sheetAccounts.getMaxRows(), 1).getValue() == today) return sheetAccounts.getMaxRows();
-  
-  sheetAccounts.getRange(sheetAccounts.getMaxRows() + 1, 1).setValue(today);
-  return sheetAccounts.getMaxRows();
-}
-
-// Сравнивает значение остатка на начало дня с значением остатка конца прошлого дня
-function checkValuesOfAccounts(sheetAccounts, row, column){
-  const yesterday = Utilities.formatDate(new Date(new Date() - oneDay), "GMT+3", "dd.MM.yyyy");
-  if (sheetAccounts.getRange(row-1, 1).getValue() == yesterday){
-    const lastValue = sheetAccounts.getRange(row-1, column+1).getValue();
-    const value = sheetAccounts.getRange(row, column).getValue();
-    if (lastValue != value && lastValue !== ""){
-      sheetAccounts.getRange(row-1, column+1).setNote("Не совпадает со следующим днём");
-      sheetAccounts.getRange(row-1, column+1).setBackgroundRGB(255, 0, 0);
-      sheetAccounts.getRange(row, column).setNote("Не совпадает с прошлым днём");
-      sheetAccounts.getRange(row, column).setValue("");
-      sheetAccounts.getRange(row, column).setBackgroundRGB(255, 0, 0);
-      writeError('На листе "счета" не совпадают данные. Cчет: ' + sheetAccounts.getRange(1, column).getValue());
-      Browser.msgBox("Ошибка!", 'На листе "счета" не совпадают данные. Cчет: ' + sheetAccounts.getRange(1, column).getValue(), Browser.Buttons.OK);
-    }
-  }
-}
-
-//Обновляет значения на листе "счета"
-function updateAccountsValues(sheets, payments, companies){
-  const sheetAccounts = sheets.getSheetByName("счета");
-  
-  const row = getRowAccounts(sheetAccounts);
-  
-  const accounts = getAccountsOnSheet(sheetAccounts);
-  
-  for (let i = 0; i < companies.length; i++){
-    for (let j = 0; j < companies[i].bankAccounts.length; j++){
-      let is_exist = false;
-      let column;
-      for (let k = 0; k < accounts.length; k++){
-        if (companies[i].bankAccounts[j].number == accounts[k]){
-          column = (k+1)*2;
-          updateAccount(sheetAccounts, payments, companies[i].bankAccounts[j].balance, row, column);
-          is_exist = true;
-          break;
-        }
-      }
-      if (!is_exist){
-        column = sheetAccounts.getMaxColumns()+1;
-        sheetAccounts.getRange(1, column, 1, 2).setValue(companies[i].bankAccounts[j].number).merge().setBorder(false, false, true, true, false, false);
-        updateAccount(sheetAccounts, payments, companies[i].bankAccounts[j].balance, row, column);
-      }
-      checkValuesOfAccounts(sheetAccounts, row, column);
     }
   }
 }
